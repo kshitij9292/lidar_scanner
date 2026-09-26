@@ -1,3 +1,4 @@
+
 # LiDAR Line-Scanner -- Full Package
 
 650 nm line-laser scanner: NEMA23 + TB6600 + AS5600 pan head (ESP32),
@@ -106,3 +107,5 @@ encoder wiring changes.
 | Scanned object shears/twists across angle | wrong `SCAN_ROTATION_AXIS_CAMERA_FRAME` in `lidar_scan.py` -- see the comment above it |
 | `ERR,DIR_DETECT,NO_MOTION` on `Z` | encoder not coupled to shaft, or AS5600 not seeing the magnet -- re-run `as5600_wiring_test.ino` |
 | `ERR,LIMITS_NOT_SET` | send `L<min>,<max>` before any `M`/`T` |
+# lidar_scanner
+
