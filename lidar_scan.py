@@ -3,82 +3,35 @@
 lidar_scan.py
 ==================================================================
 Everything needed on the Raspberry Pi for the 650 nm line-laser
-scanner, in ONE file: laser-line detection, camera + laser-plane
-calibration, and the scan itself.
+scanner, in ONE file: laser-line detection, optional camera +
+laser-plane calibration, and the scan itself.
+
+NO-CALIBRATION MODE (default here): set USE_NOMINAL_CALIBRATION = True
+and fill in CAMERA_HFOV_DEG, LASER_BASELINE_MM and LASER_ANGLE_DEG in
+the config below. `scan` then works with no .npy files and no
+`calibrate` step. Scale/shape are approximate (a few percent error,
+some lens-distortion curvature). Set it to False to use real
+calibration files produced by `calibrate`.
 
 ------------------------------------------------------------------
 SETUP ON A FRESH RASPBERRY PI IMAGE (Raspberry Pi OS Bookworm, 64-bit)
 ------------------------------------------------------------------
-1. Flash the SD card
-   Use Raspberry Pi Imager (https://www.raspberrypi.com/software/).
-   Choose "Raspberry Pi OS (64-bit)". The full desktop image is
-   easiest since libcamera/picamera2 come preinstalled; the Lite
-   image works too but needs one extra apt install (step 4).
-   In the Imager's settings (gear icon), set hostname, enable SSH,
-   and configure Wi-Fi before writing, so it's headless-ready on
-   first boot.
+    sudo apt update && sudo apt full-upgrade -y
+    rpicam-hello --list-cameras                 # confirm camera
+    sudo apt install -y python3-picamera2 --no-install-recommends   # Lite only
+    sudo apt install -y python3-opencv python3-numpy python3-serial
+    sudo usermod -aG dialout $USER              # then log out/in
+    ls /dev/ttyUSB* /dev/ttyACM*                # find the ESP32 port
 
-2. First boot
-       ssh pi@<hostname-or-ip>
-       sudo apt update && sudo apt full-upgrade -y
-       sudo reboot
-
-3. Confirm the camera is detected
-   Bookworm uses libcamera by default -- nothing to toggle in
-   raspi-config.
-       rpicam-hello --list-cameras
-   (older images may call this libcamera-hello instead)
-
-4. Install dependencies
-   Lite image only (full desktop image already has this):
-       sudo apt install -y python3-picamera2 --no-install-recommends
-   Both image variants:
-       sudo apt install -y python3-opencv python3-numpy python3-serial
-
-   Bookworm's system Python is "externally managed" (PEP 668), so a
-   plain `pip install` will refuse to run. Installing via apt (above)
-   is the simplest fix, and is what picamera2 needs anyway -- it
-   isn't reliably pip-installable outside the Pi's own apt repo.
-
-5. Serial port permission
-       sudo usermod -aG dialout $USER
-   Log out and back in (or reboot) for this to take effect, or you'll
-   get a permission-denied error opening the ESP32's port.
-
-6. Wiring recap
-       ESP32  <-- USB -->  Raspberry Pi
-       Camera Module 2 --> Pi CSI port
-       Laser module     --> its own driver/supply, aimed to cross
-                             the camera's field of view
-   The ESP32 firmware is flashed separately from the Arduino side --
-   this script only talks to it over serial once it's running.
-
-7. Find the ESP32's serial port
-       ls /dev/ttyUSB* /dev/ttyACM*
-   Pass whichever shows up with --port (see USAGE below).
-
-8. Find your laptop's IP (for the point-cloud viewer)
-   On the laptop: `ipconfig` (Windows) or `ifconfig` / `ip a`
-   (Mac/Linux). Pass it with --laptop-ip. The laptop must already be
-   running viewer.py and listening BEFORE you start a scan.
-
-9. Put this file in its own directory on the Pi -- calibrate and
-   scan both read/write their .npy files next to it automatically.
+The laptop must already be running viewer.py and listening BEFORE you
+start a scan. Pass the laptop IP with --laptop-ip.
 
 ------------------------------------------------------------------
 USAGE
 ------------------------------------------------------------------
-    python3 lidar_scan.py check                  # verify camera + ESP32 before anything else
-    python3 lidar_scan.py calibrate              # run once -> writes the 3 .npy files
-    python3 lidar_scan.py scan                    # run per scan (viewer.py must already be listening)
-
     python3 lidar_scan.py check   --port /dev/ttyUSB0
+    python3 lidar_scan.py calibrate               # only if USE_NOMINAL_CALIBRATION = False
     python3 lidar_scan.py scan    --port /dev/ttyUSB0 --laptop-ip 192.168.1.100
-
-Files produced by `calibrate`, consumed by `scan` (kept next to this script):
-    camera_matrix.npy
-    dist_coeffs.npy
-    laser_plane.npy
 ==================================================================
 """
 
@@ -109,6 +62,12 @@ ROW_STRIDE     = 1     # process every Nth row (1 = every row)
 CHESSBOARD     = (9, 6)     # inner corners
 SQUARE_SIZE_MM = 25.0
 IMAGE_SIZE     = (1280, 720)
+
+# -- No-calibration mode: nominal values instead of the .npy files --
+USE_NOMINAL_CALIBRATION = True
+CAMERA_HFOV_DEG   = 62.2    # Camera Module 2 horizontal FOV
+LASER_BASELINE_MM = 100.0   # laser distance from camera along X; + = laser right of camera. MEASURE THIS
+LASER_ANGLE_DEG   = 20.0    # laser tilt toward the camera's optical axis (negative if laser is left). MEASURE THIS
 
 # -- Laser plane calibration --
 MIN_LASER_DEPTHS = 3   # need >=3 depths for a well-conditioned plane fit
@@ -214,6 +173,21 @@ def rotate_about_scan_axis(P, angle_deg):
     """Rotate camera-frame points into the world/scan frame using
     SCAN_ROTATION_AXIS_CAMERA_FRAME (see config above)."""
     return rotate_about_axis(P, angle_deg, SCAN_ROTATION_AXIS_CAMERA_FRAME)
+
+
+def nominal_calibration():
+    """Approximate K, D, laser plane from datasheet FOV + two ruler
+    measurements. Used when USE_NOMINAL_CALIBRATION is True."""
+    w, h = IMAGE_SIZE
+    fx = (w / 2) / np.tan(np.deg2rad(CAMERA_HFOV_DEG) / 2)
+    K = np.array([[fx, 0, w / 2],
+                  [0, fx, h / 2],
+                  [0, 0, 1]], np.float32)
+    D = np.zeros((5, 1), np.float32)
+    th = np.deg2rad(LASER_ANGLE_DEG)
+    plane = np.array([np.cos(th), 0.0, np.sin(th),
+                      -np.cos(th) * LASER_BASELINE_MM], np.float32)
+    return K, D, plane
 
 
 # ============================================================
@@ -330,7 +304,7 @@ def cmd_check(args):
 
 
 # ============================================================
-# Mode: calibrate
+# Mode: calibrate  (not needed when USE_NOMINAL_CALIBRATION = True)
 # ============================================================
 
 def calibrate_camera():
@@ -445,6 +419,10 @@ def calibrate_laser_plane(K, D):
 
 
 def cmd_calibrate(args):
+    if USE_NOMINAL_CALIBRATION:
+        print("USE_NOMINAL_CALIBRATION is True -- calibration is not needed.")
+        print("Set it to False in the config if you want to run real calibration.")
+        return
     if os.path.exists("camera_matrix.npy") and os.path.exists("dist_coeffs.npy"):
         K = np.load("camera_matrix.npy")
         D = np.load("dist_coeffs.npy")
@@ -470,14 +448,18 @@ def send_cloud(sock, P):
 
 
 def cmd_scan(args):
-    for f in ("camera_matrix.npy", "dist_coeffs.npy", "laser_plane.npy"):
-        if not os.path.exists(f):
-            print(f"ERROR: {f} not found -- run `calibrate` first")
-            return
-    K     = np.load("camera_matrix.npy")
-    D     = np.load("dist_coeffs.npy")
-    PLANE = np.load("laser_plane.npy")
-    print("calibration loaded")
+    if USE_NOMINAL_CALIBRATION:
+        K, D, PLANE = nominal_calibration()
+        print("using NOMINAL calibration (approximate)")
+    else:
+        for f in ("camera_matrix.npy", "dist_coeffs.npy", "laser_plane.npy"):
+            if not os.path.exists(f):
+                print(f"ERROR: {f} not found -- run `calibrate` first")
+                return
+        K     = np.load("camera_matrix.npy")
+        D     = np.load("dist_coeffs.npy")
+        PLANE = np.load("laser_plane.npy")
+        print("calibration loaded")
 
     cam = make_camera(still=True)
     ser = open_esp_serial(args.port)
