@@ -1,5 +1,10 @@
 # LiDAR Line-Scanner: Full Package
  
+---
+ 
+- Pan-head gearbox: [kshitij9292/Nema23_planetary_gearbox_25-1-](https://github.com/kshitij9292/Nema23_planetary_gearbox_25-1-) (MIT license)
+
+
 650 nm line-laser scanner: a NEMA 23 stepper with a 25:1 planetary gearbox, driven by a TB6600 and an ESP32 with AS5600 closed-loop feedback, forms the pan head. A Pi camera captures the laser stripe and a laptop shows the live point cloud.
  
 ```
@@ -153,9 +158,4 @@ When to redo things:
 | All angles scaled by a constant factor (e.g. 2x) | Microstepping DIP switches don't match the firmware's steps-per-degree constant; see Step math above |
 | Point cloud jitter or ghosting | Wait for the head to settle before capture; approach each bin from the same direction (gearbox backlash) |
  
----
- 
-## Credits
- 
-- Pan-head gearbox: [kshitij9292/Nema23_planetary_gearbox_25-1-](https://github.com/kshitij9292/Nema23_planetary_gearbox_25-1-) (MIT license)
  
